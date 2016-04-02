@@ -1,8 +1,14 @@
 package net.jejer.hipda.glide;
 
+import android.app.Activity;
+import android.app.Fragment;
 import android.content.Context;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
+import android.os.Build;
 import android.widget.ImageView;
 
 import com.bumptech.glide.Glide;
@@ -29,9 +35,12 @@ import net.jejer.hipda.utils.Constants;
 import net.jejer.hipda.utils.HiUtils;
 import net.jejer.hipda.utils.Logger;
 
+import java.io.ByteArrayInputStream;
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.ByteBuffer;
 import java.util.concurrent.TimeUnit;
 
 import de.greenrobot.event.EventBus;
@@ -45,6 +54,7 @@ public class GlideHelper {
 
     private static LRUCache<String, String> NOT_FOUND_AVATARS = new LRUCache<>(512);
     private static File AVATAR_CACHE_DIR;
+    public static File DEFAULT_AVATAR_FILE;
 
     private static Drawable DEFAULT_USER_ICON;
 
@@ -93,6 +103,18 @@ public class GlideHelper {
             Glide.get(context).register(GlideUrl.class, InputStream.class, new OkHttpUrlLoader.Factory(client));
 
             AVATAR_CACHE_DIR = Glide.getPhotoCacheDir(context, "avatar");
+
+            DEFAULT_USER_ICON = new IconicsDrawable(HiApplication.getAppContext(), GoogleMaterial.Icon.gmd_account_box).color(Color.LTGRAY).sizeDp(64);
+            DEFAULT_AVATAR_FILE = new File(AVATAR_CACHE_DIR, "default.png");
+            if (!DEFAULT_AVATAR_FILE.exists()) {
+                try {
+                    Bitmap b = drawableToBitmap(DEFAULT_USER_ICON);
+                    b.compress(Bitmap.CompressFormat.PNG, 100, new FileOutputStream(DEFAULT_AVATAR_FILE));
+                    b.recycle();
+                } catch (Exception e) {
+                    Logger.e(e);
+                }
+            }
         }
     }
 
@@ -101,15 +123,10 @@ public class GlideHelper {
     }
 
     public static void loadAvatar(BaseFragment fragment, ImageView view, String avatarUrl) {
-        if (fragment == null || fragment.isDetached() || !fragment.isAdded())
-            return;
-
-        if (DEFAULT_USER_ICON == null)
-            DEFAULT_USER_ICON = new IconicsDrawable(HiApplication.getAppContext(), GoogleMaterial.Icon.gmd_account_box).color(Color.LTGRAY);
-
-        if (NOT_FOUND_AVATARS.containsKey(avatarUrl)) {
-            view.setImageDrawable(DEFAULT_USER_ICON);
-        } else {
+        if (isOkToLoad(fragment)) {
+            if (NOT_FOUND_AVATARS.containsKey(avatarUrl)) {
+                avatarUrl = DEFAULT_AVATAR_FILE.getAbsolutePath();
+            }
             Glide.with(fragment)
                     .load(avatarUrl)
                     .diskCacheStrategy(DiskCacheStrategy.NONE)
@@ -190,6 +207,41 @@ public class GlideHelper {
 
     public static File getAvatarFile(String url) {
         return new File(GlideHelper.AVATAR_CACHE_DIR, url.substring(HiUtils.AvatarBaseUrl.length()).replace("/", "_"));
+    }
+
+    public static boolean isOkToLoad(Context activity) {
+        if (activity != null
+                && Build.VERSION.SDK_INT >= 17
+                && activity instanceof Activity) {
+            if (((Activity) activity).isDestroyed())
+                return false;
+        }
+        return true;
+    }
+
+    public static boolean isOkToLoad(Fragment fragment) {
+        return fragment != null && fragment.getActivity() != null && !fragment.isDetached();
+    }
+
+
+    private static Bitmap drawableToBitmap(Drawable drawable) {
+        if (drawable instanceof BitmapDrawable) {
+            return ((BitmapDrawable) drawable).getBitmap();
+        }
+
+        Bitmap bitmap = Bitmap.createBitmap(drawable.getIntrinsicWidth(), drawable.getIntrinsicHeight(), Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(bitmap);
+        drawable.setBounds(0, 0, canvas.getWidth(), canvas.getHeight());
+        drawable.draw(canvas);
+
+        return bitmap;
+    }
+
+    private static InputStream bitmapToInputStream(Bitmap bitmap) {
+        int size = bitmap.getHeight() * bitmap.getRowBytes();
+        ByteBuffer buffer = ByteBuffer.allocate(size);
+        bitmap.copyPixelsToBuffer(buffer);
+        return new ByteArrayInputStream(buffer.array());
     }
 
 }

@@ -54,7 +54,7 @@ import net.jejer.hipda.BuildConfig;
 import net.jejer.hipda.R;
 import net.jejer.hipda.async.DetailListLoader;
 import net.jejer.hipda.async.FavoriteHelper;
-import net.jejer.hipda.async.PostAsyncTask;
+import net.jejer.hipda.async.PostHelper;
 import net.jejer.hipda.bean.DetailBean;
 import net.jejer.hipda.bean.DetailListBean;
 import net.jejer.hipda.bean.HiSettingsHelper;
@@ -63,10 +63,13 @@ import net.jejer.hipda.cache.ImageContainer;
 import net.jejer.hipda.cache.ThreadDetailCache;
 import net.jejer.hipda.glide.GifTransformation;
 import net.jejer.hipda.glide.GlideBitmapTarget;
-import net.jejer.hipda.glide.GlideImageManager;
+import net.jejer.hipda.glide.GlideHelper;
 import net.jejer.hipda.glide.GlideImageView;
 import net.jejer.hipda.glide.ImageReadyInfo;
 import net.jejer.hipda.glide.ThreadImageDecoder;
+import net.jejer.hipda.job.JobMgr;
+import net.jejer.hipda.job.PostEvent;
+import net.jejer.hipda.job.PostJob;
 import net.jejer.hipda.utils.ColorUtils;
 import net.jejer.hipda.utils.Constants;
 import net.jejer.hipda.utils.HiUtils;
@@ -76,12 +79,11 @@ import net.jejer.hipda.utils.Utils;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.UUID;
 
 import de.greenrobot.event.EventBus;
 
 
-public class ThreadDetailFragment extends BaseFragment implements PostAsyncTask.PostListener {
+public class ThreadDetailFragment extends BaseFragment {
     public static final String ARG_TID_KEY = "tid";
     public static final String ARG_PID_KEY = "pid";
     public static final String ARG_TITLE_KEY = "title";
@@ -122,14 +124,12 @@ public class ThreadDetailFragment extends BaseFragment implements PostAsyncTask.
     private HiProgressDialog postProgressDialog;
     private FloatingActionMenu mFam;
     private ContentLoadingProgressBar mLoadingProgressBar;
-    protected String sessionId;
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
         Logger.v("onCreate");
         super.onCreate(savedInstanceState);
 
-        ((MainFrameActivity) getActivity()).registOnSwipeCallback(this);
         mCtx = getActivity();
 
         setHasOptionsMenu(true);
@@ -299,7 +299,9 @@ public class ThreadDetailFragment extends BaseFragment implements PostAsyncTask.
                     PostBean postBean = new PostBean();
                     postBean.setContent(replyText);
                     postBean.setTid(mTid);
-                    new PostAsyncTask(getActivity(), PostAsyncTask.MODE_QUICK_REPLY, null, ThreadDetailFragment.this).execute(postBean);
+
+                    JobMgr.addJob(new PostJob(mSessionId, PostHelper.MODE_QUICK_REPLY, null, postBean));
+
                     // Close SoftKeyboard
                     InputMethodManager imm = (InputMethodManager) getActivity().getSystemService(
                             Context.INPUT_METHOD_SERVICE);
@@ -348,6 +350,8 @@ public class ThreadDetailFragment extends BaseFragment implements PostAsyncTask.
     @Override
     public void onResume() {
         super.onResume();
+        if (!EventBus.getDefault().isRegistered(this))
+            EventBus.getDefault().registerSticky(this);
         if (!mInloading) {
             if (mDetailBeans.size() == 0) {
                 refresh();
@@ -355,6 +359,12 @@ public class ThreadDetailFragment extends BaseFragment implements PostAsyncTask.
                 mLoadingProgressBar.hide();
             }
         }
+    }
+
+    @Override
+    public void onPause() {
+        EventBus.getDefault().unregister(this);
+        super.onPause();
     }
 
     @Override
@@ -501,11 +511,12 @@ public class ThreadDetailFragment extends BaseFragment implements PostAsyncTask.
     private void showPost(String text) {
         Bundle arguments = new Bundle();
         arguments.putString(PostFragment.ARG_TID_KEY, mTid);
-        arguments.putInt(PostFragment.ARG_MODE_KEY, PostAsyncTask.MODE_REPLY_THREAD);
+        arguments.putInt(PostFragment.ARG_MODE_KEY, PostHelper.MODE_REPLY_THREAD);
         arguments.putString(PostFragment.ARG_TEXT_KEY, text);
         PostFragment fragment = new PostFragment();
+        fragment.setParentSessionId(mSessionId);
+
         fragment.setArguments(arguments);
-        fragment.setPostListener(this);
         getFragmentManager().beginTransaction()
                 .add(R.id.main_frame_container, fragment, fragment.getClass().getName())
                 .addToBackStack(fragment.getClass().getName())
@@ -523,52 +534,6 @@ public class ThreadDetailFragment extends BaseFragment implements PostAsyncTask.
         Toast.makeText(mCtx, mTitle, Toast.LENGTH_SHORT).show();
     }
 
-    @Override
-    public void onPrePost() {
-        postProgressDialog = HiProgressDialog.show(mCtx, "正在发表...");
-    }
-
-    @Override
-    public void onPostDone(int mode, int status, String message, PostBean postBean) {
-        if (status == Constants.STATUS_SUCCESS) {
-            //pop post fragment on success
-            Fragment fg = getFragmentManager().findFragmentById(R.id.main_frame_container);
-            if (fg instanceof PostFragment) {
-                ((MainFrameActivity) getActivity()).popFragment(false);
-            } else if (quickReply.getVisibility() == View.VISIBLE) {
-                mReplyTextTv.setText("");
-                quickReply.setVisibility(View.INVISIBLE);
-            }
-
-            if (postProgressDialog != null) {
-                postProgressDialog.dismiss(message);
-            } else {
-                Toast.makeText(mCtx, message, Toast.LENGTH_SHORT).show();
-            }
-
-            if (!mAuthorOnly) {
-                if (mode != PostAsyncTask.MODE_EDIT_POST) {
-                    mCurrentPage = mMaxPage;
-                    mFloorOfPage = LAST_FLOOR;
-                } else {
-                    int floor = LAST_FLOOR;
-                    if (!TextUtils.isEmpty(postBean.getFloor()) && TextUtils.isDigitsOnly(postBean.getFloor()))
-                        floor = Integer.parseInt(postBean.getFloor());
-                    if (floor == LAST_FLOOR || floor > 0)
-                        mFloorOfPage = floor;
-                }
-                mCache.remove(mCurrentPage);
-                showOrLoadPage();
-            }
-
-        } else {
-            if (postProgressDialog != null) {
-                postProgressDialog.dismissError(message);
-            } else {
-                Toast.makeText(mCtx, message, Toast.LENGTH_LONG).show();
-            }
-        }
-    }
 
     public DetailBean getCachedPost(String postId) {
         return mCache.getPostByPostId(postId);
@@ -611,26 +576,19 @@ public class ThreadDetailFragment extends BaseFragment implements PostAsyncTask.
     }
 
     @Override
-    public void onPause() {
-        super.onPause();
-    }
-
-    @Override
     public void onStart() {
         super.onStart();
-        sessionId = UUID.randomUUID().toString();
     }
 
     @Override
     public void onStop() {
         super.onStop();
-        GlideImageManager.cancelJobs(sessionId);
+        JobMgr.cancelJobs(mSessionId);
     }
 
     @Override
     public void onDestroy() {
         getLoaderManager().destroyLoader(0);
-        ((MainFrameActivity) getActivity()).registOnSwipeCallback(null);
         EventBus.getDefault().unregister(mDetailAdapter);
         if (HiSettingsHelper.getInstance().getBooleanValue(HiSettingsHelper.PERF_AUTO_CLEAR_MEMORY, true)
                 && Utils.isMemoryUsageHigh()) {
@@ -793,7 +751,7 @@ public class ThreadDetailFragment extends BaseFragment implements PostAsyncTask.
             mDetailListView.setItemChecked(position, true);
 
             position = position - mDetailListView.getHeaderViewsCount();
-            if (position > mDetailAdapter.getCount()) {
+            if (position >= mDetailAdapter.getCount()) {
                 return false;
             }
 
@@ -1071,21 +1029,23 @@ public class ThreadDetailFragment extends BaseFragment implements PostAsyncTask.
                 giv.setClickToViewBigImage();
             }
 
-            if (imageReadyInfo.isGif()) {
-                Glide.with(ThreadDetailFragment.this)
-                        .load(imageUrl)
-                        .asBitmap()
-                        .diskCacheStrategy(DiskCacheStrategy.ALL)
-                        .transform(new GifTransformation(mCtx))
-                        .into(new GlideBitmapTarget(giv, imageReadyInfo.getDisplayWidth(), imageReadyInfo.getDisplayHeight()));
-            } else {
-                Glide.with(ThreadDetailFragment.this)
-                        .load(imageUrl)
-                        .asBitmap()
-                        .cacheDecoder(new FileToStreamDecoder<>(new ThreadImageDecoder(mMaxImageDecodeWidth, imageReadyInfo)))
-                        .imageDecoder(new ThreadImageDecoder(mMaxImageDecodeWidth, imageReadyInfo))
-                        .diskCacheStrategy(DiskCacheStrategy.ALL)
-                        .into(new GlideBitmapTarget(giv, imageReadyInfo.getDisplayWidth(), imageReadyInfo.getDisplayHeight()));
+            if (GlideHelper.isOkToLoad(ThreadDetailFragment.this)) {
+                if (imageReadyInfo.isGif()) {
+                    Glide.with(ThreadDetailFragment.this)
+                            .load(imageUrl)
+                            .asBitmap()
+                            .diskCacheStrategy(DiskCacheStrategy.ALL)
+                            .transform(new GifTransformation(mCtx))
+                            .into(new GlideBitmapTarget(giv, imageReadyInfo.getDisplayWidth(), imageReadyInfo.getDisplayHeight()));
+                } else {
+                    Glide.with(ThreadDetailFragment.this)
+                            .load(imageUrl)
+                            .asBitmap()
+                            .cacheDecoder(new FileToStreamDecoder<>(new ThreadImageDecoder(mMaxImageDecodeWidth, imageReadyInfo)))
+                            .imageDecoder(new ThreadImageDecoder(mMaxImageDecodeWidth, imageReadyInfo))
+                            .diskCacheStrategy(DiskCacheStrategy.ALL)
+                            .into(new GlideBitmapTarget(giv, imageReadyInfo.getDisplayWidth(), imageReadyInfo.getDisplayHeight()));
+                }
             }
         } else {
             giv.setImageResource(R.drawable.image_broken);
@@ -1111,6 +1071,9 @@ public class ThreadDetailFragment extends BaseFragment implements PostAsyncTask.
     }
 
     public void startImageGallery(int imageIndex) {
+        if (!HiApplication.isActivityVisible()) {
+            return;
+        }
         if (mAuthorOnly) {
             Toast.makeText(getActivity(), "请先退出只看楼主模式", Toast.LENGTH_LONG).show();
             return;
@@ -1122,7 +1085,7 @@ public class ThreadDetailFragment extends BaseFragment implements PostAsyncTask.
         }
         if (detailListBean.getContentImages().size() > 0) {
             PopupImageDialog popupImageDialog = new PopupImageDialog();
-            popupImageDialog.init(detailListBean, imageIndex, sessionId);
+            popupImageDialog.init(detailListBean, imageIndex, mSessionId);
             popupImageDialog.show(getFragmentManager(), PopupImageDialog.class.getName());
         } else {
             Toast.makeText(mCtx, "本页没有图片", Toast.LENGTH_SHORT).show();
@@ -1131,6 +1094,60 @@ public class ThreadDetailFragment extends BaseFragment implements PostAsyncTask.
 
     public String getTid() {
         return mTid;
+    }
+
+    @Override
+    public boolean onBackPressed() {
+        return hideQuickReply();
+    }
+
+    @SuppressWarnings("unused")
+    public void onEventMainThread(PostEvent event) {
+        if (!mSessionId.equals(event.mSessionId))
+            return;
+
+        String message = event.mMessage;
+        PostBean postResult = event.mPostResult;
+
+        if (event.mStatus == Constants.STATUS_IN_PROGRESS) {
+            postProgressDialog = HiProgressDialog.show(mCtx, "正在发表...");
+        } else if (event.mStatus == Constants.STATUS_SUCCESS) {
+            //pop post fragment on success
+            Fragment fg = getFragmentManager().findFragmentById(R.id.main_frame_container);
+            if (fg instanceof PostFragment) {
+                ((BaseFragment) fg).popFragment();
+            } else if (quickReply.getVisibility() == View.VISIBLE) {
+                mReplyTextTv.setText("");
+                quickReply.setVisibility(View.INVISIBLE);
+            }
+
+            if (postProgressDialog != null) {
+                postProgressDialog.dismiss(message);
+            } else {
+                Toast.makeText(mCtx, message, Toast.LENGTH_SHORT).show();
+            }
+
+            if (!mAuthorOnly) {
+                if (event.mMode != PostHelper.MODE_EDIT_POST) {
+                    mCurrentPage = mMaxPage;
+                    mFloorOfPage = LAST_FLOOR;
+                } else {
+                    int floor = LAST_FLOOR;
+                    if (!TextUtils.isEmpty(postResult.getFloor()) && TextUtils.isDigitsOnly(postResult.getFloor()))
+                        floor = Integer.parseInt(postResult.getFloor());
+                    if (floor == LAST_FLOOR || floor > 0)
+                        mFloorOfPage = floor;
+                }
+                mCache.remove(mCurrentPage);
+                showOrLoadPage();
+            }
+        } else {
+            if (postProgressDialog != null) {
+                postProgressDialog.dismissError(message);
+            } else {
+                Toast.makeText(mCtx, message, Toast.LENGTH_LONG).show();
+            }
+        }
     }
 
 }

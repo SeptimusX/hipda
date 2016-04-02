@@ -18,11 +18,12 @@ import net.jejer.hipda.bean.ContentImg;
 import net.jejer.hipda.cache.ImageContainer;
 import net.jejer.hipda.glide.GifTransformation;
 import net.jejer.hipda.glide.GlideBitmapTarget;
+import net.jejer.hipda.glide.GlideHelper;
 import net.jejer.hipda.glide.GlideImageEvent;
-import net.jejer.hipda.glide.GlideImageJob;
-import net.jejer.hipda.glide.GlideImageManager;
 import net.jejer.hipda.glide.GlideImageView;
 import net.jejer.hipda.glide.ImageReadyInfo;
+import net.jejer.hipda.job.GlideImageJob;
+import net.jejer.hipda.job.JobMgr;
 import net.jejer.hipda.utils.Logger;
 
 import java.io.File;
@@ -68,7 +69,7 @@ public class PopupImageAdapter extends PagerAdapter {
         if (imageReadyInfo == null || !(new File(imageReadyInfo.getPath())).exists()) {
             imageLayout.getProgressBar().setVisibility(View.VISIBLE);
             imageLayout.getProgressBar().setIndeterminate(true);
-            GlideImageManager.addJob(new GlideImageJob(mDialog, imageUrl, GlideImageManager.PRIORITY_HIGH, mSessionId, true));
+            JobMgr.addJob(new GlideImageJob(mDialog, imageUrl, JobMgr.PRIORITY_HIGH, mSessionId, true));
         } else {
             displayImage(imageLayout, imageUrl);
         }
@@ -103,14 +104,16 @@ public class PopupImageAdapter extends PagerAdapter {
                 gifImageView.setVisibility(View.VISIBLE);
                 scaleImageView.setVisibility(View.GONE);
 
-                Glide.with(mDialog)
-                        .load(imageUrl)
-                        .asBitmap()
-                        .priority(Priority.IMMEDIATE)
-                        .diskCacheStrategy(DiskCacheStrategy.ALL)
-                        .transform(new GifTransformation(mDialog.getActivity()))
-                        .error(R.drawable.image_broken)
-                        .into(new GlideBitmapTarget(gifImageView, imageReadyInfo.getDisplayWidth(), imageReadyInfo.getDisplayHeight()));
+                if (GlideHelper.isOkToLoad(mDialog)) {
+                    Glide.with(mDialog)
+                            .load(imageUrl)
+                            .asBitmap()
+                            .priority(Priority.IMMEDIATE)
+                            .diskCacheStrategy(DiskCacheStrategy.ALL)
+                            .transform(new GifTransformation(mDialog.getActivity()))
+                            .error(R.drawable.image_broken)
+                            .into(new GlideBitmapTarget(gifImageView, imageReadyInfo.getDisplayWidth(), imageReadyInfo.getDisplayHeight()));
+                }
 
                 gifImageView.setUrl(imageUrl);
                 gifImageView.setImageReadyInfo(imageReadyInfo);
